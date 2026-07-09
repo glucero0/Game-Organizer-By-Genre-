@@ -7,33 +7,19 @@ Setup:
     1. Create a Twitch developer application: https://dev.twitch.tv/console/apps
        (Category: "Application Integration"). This gives you a Client ID and
        Client Secret - IGDB authenticates through Twitch.
-    2. Provide those via --client-id/--client-secret, or the
-       IGDB_CLIENT_ID / IGDB_CLIENT_SECRET environment variables.
+    2. Copy .env.example to .env and set IGDB_CLIENT_ID and IGDB_CLIENT_SECRET.
 
 Example:
     python organize_games.py --source "D:\\Games\\*.adf" --dest "D:\\Organized"
     python organize_games.py --source "D:\\ROMs\\*.zip" --dest "D:\\Organized" --dry-run
     python organize_games.py --source "D:\\Games\\*.adf" --dest "D:\\Organized" --dry-run --unknowns-only
 
-Optional manual overrides:
-    If the automatic filename parsing guesses the wrong title for a
-    particular file, pass --overrides pointing at a JSON file mapping either
-    the original filename OR the auto-parsed title (case-insensitive) to the
-    exact title that should be searched on IGDB, e.g.:
-
-        {
-            "Flimbo.adf": "Flimbo's Quest",
-            "some weird parsed title": "Actual Game Name"
-        }
-
-    To assign a genre without relying on IGDB, create genre_overrides.json
-    (or pass --genre-overrides) mapping filename or parsed title to a folder
-    name, e.g.:
-
-        {
-            "hack.adf": "Role-playing (RPG)",
-            "empty disk for saves.adf": "Utility"
-        }
+Optional JSON files beside this script (loaded automatically if present):
+    platform_defaults.json   — extension -> IGDB platform when --platform is omitted
+    igdb_title_aliases.json  — map parsed titles to IGDB search names
+    acronyms.json            — expand short scene filenames to full titles
+    genre_overrides.json     — map filenames/titles to genre folders
+    curated_library.json     — reviewed per-file shelf assignments
 """
 
 import argparse
@@ -46,8 +32,17 @@ from pathlib import Path
 
 import requests
 
-from filename_parser import clean_title, reload_amiga_acronyms, search_title_variants
-from igdb_client import AMIGA_PLATFORM_ID, IGDBClient
+from curated import (
+    curated_search_titles,
+    load_curated_library,
+    lookup_curated_entry,
+    resolve_shelf_genre,
+)
+from filename_parser import clean_title, reload_acronyms, search_title_variants
+from igdb_client import IGDBClient, MIN_MATCH_SCORE
+
+ORGANIZE_LOG_CSV = "organize_log.csv"
+from platform_defaults import load_platform_defaults, resolve_platform_ids
 
 UNKNOWN_GENRE = "Unknown"
 _INVALID_FS_CHARS = '<>:"/\\|?*'
@@ -101,39 +96,12 @@ def unique_destination(dest_path):
         counter += 1
 
 
-def platform_ids_for_glob(pattern):
-    if pattern.lower().endswith(".adf"):
-        return [AMIGA_PLATFORM_ID]
-    return None
-
-
-def resolve_platform_ids(pattern, platform_arg):
-    if platform_arg is None:
-        return platform_ids_for_glob(pattern)
-    if platform_arg.lower() in ("none", "off", ""):
-        return None
-    if platform_arg.lower() == "amiga":
-        return [AMIGA_PLATFORM_ID]
-    try:
-        return [int(platform_arg)]
-    except ValueError:
-        sys.exit(f"Error: unknown --platform value: {platform_arg!r} (use amiga, none, or a numeric IGDB platform ID)")
-
-
-def load_overrides(path):
-    if not path:
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    return {k.strip().lower(): v for k, v in raw.items()}
-
-
 def default_genre_overrides_path():
     return Path(__file__).resolve().parent / "genre_overrides.json"
 
 
-def load_genre_overrides(path=None):
-    override_path = Path(path) if path else default_genre_overrides_path()
+def load_genre_overrides():
+    override_path = default_genre_overrides_path()
     if not override_path.is_file():
         return {}
     try:
@@ -192,29 +160,12 @@ def load_local_env_files():
     _load_dotenv_file(Path.cwd() / ".env")
 
 
-def resolve_igdb_credentials(cli_client_id=None, cli_client_secret=None):
-    """
-    Resolve IGDB/Twitch credentials from CLI args, environment variables,
-    igdb_credentials.json, or a .env file.
-    """
+def resolve_igdb_credentials():
+    """Resolve IGDB/Twitch credentials from .env (or environment variables)."""
     load_local_env_files()
 
-    client_id = (cli_client_id or os.environ.get("IGDB_CLIENT_ID") or "").strip()
-    client_secret = (cli_client_secret or os.environ.get("IGDB_CLIENT_SECRET") or "").strip()
-
-    if client_id and client_secret:
-        return client_id, client_secret
-
-    creds_path = Path(__file__).resolve().parent / "igdb_credentials.json"
-    if creds_path.is_file():
-        try:
-            with creds_path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-            client_id = client_id or str(data.get("client_id", "")).strip()
-            client_secret = client_secret or str(data.get("client_secret", "")).strip()
-        except (json.JSONDecodeError, OSError, TypeError, AttributeError):
-            pass
-
+    client_id = (os.environ.get("IGDB_CLIENT_ID") or "").strip()
+    client_secret = (os.environ.get("IGDB_CLIENT_SECRET") or "").strip()
     return client_id, client_secret
 
 
@@ -230,19 +181,12 @@ def format_missing_credentials_error(client_id, client_secret):
         "Error: IGDB credentials missing: "
         + ", ".join(missing)
         + ".\n\n"
-        "Set them in the SAME terminal session you use to run Python, then retry:\n"
-        '  $env:IGDB_CLIENT_ID="your_client_id"\n'
-        '  $env:IGDB_CLIENT_SECRET="your_client_secret"\n\n'
-        "Or create one of these files (recommended on Windows):\n"
-        f"  {script_dir / '.env'}\n"
-        f"  {script_dir / 'igdb_credentials.json'}\n\n"
-        ".env example:\n"
+        "Create a .env file beside organize_games.py (recommended):\n"
+        f"  {script_dir / '.env'}\n\n"
+        "Example:\n"
         "  IGDB_CLIENT_ID=your_client_id\n"
         "  IGDB_CLIENT_SECRET=your_client_secret\n\n"
-        "igdb_credentials.json example:\n"
-        '  {"client_id": "your_client_id", "client_secret": "your_client_secret"}\n\n'
-        "If you set User/System environment variables in Windows, restart Cursor "
-        "so new terminals can see them."
+        "Copy from .env.example and fill in your Twitch developer credentials."
     )
 
 
@@ -285,13 +229,9 @@ def load_igdb_title_aliases(path=None):
 _IGDB_TITLE_ALIASES = load_igdb_title_aliases()
 
 
-def build_search_titles(file_path, parsed_title, overrides):
-    override = overrides.get(file_path.name.lower()) or overrides.get(parsed_title.lower())
-    if override:
-        return [override]
-
+def build_search_titles(file_path, parsed_title, curated_entry=None):
     variants = search_title_variants(parsed_title)
-    preferred = []
+    preferred = curated_search_titles(curated_entry)
     for key in (parsed_title.lower(), Path(file_path.name).stem.lower()):
         alias = _IGDB_TITLE_ALIASES.get(key)
         if alias and not any(existing.lower() == alias.lower() for existing in preferred):
@@ -320,37 +260,10 @@ def parse_args():
     )
     parser.add_argument("--dest", required=True, help="Destination folder for organized output")
     parser.add_argument(
-        "--client-id",
-        default=None,
-        help="IGDB/Twitch Client ID (or set IGDB_CLIENT_ID env var / .env / igdb_credentials.json)",
-    )
-    parser.add_argument(
-        "--client-secret",
-        default=None,
-        help="IGDB/Twitch Client Secret (or set IGDB_CLIENT_SECRET env var / .env / igdb_credentials.json)",
-    )
-    parser.add_argument(
         "--platform",
         default=None,
-        help="IGDB platform filter: amiga, none, or a numeric platform ID "
-        "(default: amiga when source glob is *.adf)",
-    )
-    parser.add_argument(
-        "--min-match-score",
-        type=float,
-        default=0.5,
-        help="Minimum title similarity score (0-1) required to accept an IGDB match (default: 0.5)",
-    )
-    parser.add_argument(
-        "--overrides",
-        default=None,
-        help="Optional JSON file mapping filename or parsed title -> exact search title",
-    )
-    parser.add_argument(
-        "--genre-overrides",
-        default=None,
-        help="JSON file mapping filename or parsed title -> genre folder name "
-        "(default: genre_overrides.json beside this script, if present)",
+        help="IGDB platform filter: alias (amiga, snes, nes, …), none, or a numeric IGDB platform ID "
+        "(default: from platform_defaults.json by source extension, if mapped)",
     )
     parser.add_argument(
         "--dry-run",
@@ -363,44 +276,40 @@ def parse_args():
         help="With --dry-run, only print unmatched files and a unique-title summary "
         "(implies --dry-run)",
     )
-    parser.add_argument(
-        "--log-file",
-        default="organize_log.csv",
-        help="CSV file to write a record of every processed file (default: organize_log.csv)",
-    )
-    parser.add_argument(
-        "--cache-file",
-        default="igdb_genre_cache.json",
-        help="JSON file used to cache IGDB lookups across runs (default: igdb_genre_cache.json)",
-    )
     return parser.parse_args()
 
 
 def main():
+    load_local_env_files()
     args = parse_args()
     if args.unknowns_only:
         args.dry_run = True
 
-    reload_amiga_acronyms()
+    reload_acronyms()
 
     source_dir, glob_pattern = parse_source_pattern(args.source)
     dest_dir = Path(args.dest).expanduser().resolve()
 
-    client_id, client_secret = resolve_igdb_credentials(args.client_id, args.client_secret)
+    client_id, client_secret = resolve_igdb_credentials()
     if not client_id or not client_secret:
         sys.exit(format_missing_credentials_error(client_id, client_secret))
 
-    overrides = load_overrides(args.overrides)
-    genre_overrides = load_genre_overrides(args.genre_overrides)
+    genre_overrides = load_genre_overrides()
+    curated_library = load_curated_library()
+    platform_defaults = load_platform_defaults()
+    platform_ids = resolve_platform_ids(glob_pattern, args.platform, platform_defaults)
     if genre_overrides:
-        print(f"Loaded {len(genre_overrides)} manual genre override(s).\n")
-    platform_ids = resolve_platform_ids(glob_pattern, args.platform)
+        print(f"Loaded {len(genre_overrides)} manual genre override(s).")
+    if curated_library:
+        unique_curated = len({k for k in curated_library if "." in k})
+        print(f"Loaded {unique_curated} curated library entries.")
+    if genre_overrides or curated_library:
+        print()
 
     try:
         client = IGDBClient(
             client_id,
             client_secret,
-            cache_file=args.cache_file,
             platform_ids=platform_ids,
         )
     except requests.RequestException as exc:
@@ -426,33 +335,37 @@ def main():
 
     for i, file_path in enumerate(files, start=1):
         parsed_title = clean_title(file_path.stem)
-        search_titles = build_search_titles(file_path, parsed_title, overrides)
+        curated_entry = lookup_curated_entry(file_path, parsed_title, curated_library)
+        search_titles = build_search_titles(file_path, parsed_title, curated_entry)
 
-        result = client.lookup_best_match(search_titles, min_score=args.min_match_score)
+        result = client.lookup_best_match(search_titles, min_score=MIN_MATCH_SCORE)
         search_title = result.get("search_title") or search_titles[0]
 
+        is_igdb_match = (
+            bool(result.get("matched_name"))
+            and result.get("match_score", 0.0) >= MIN_MATCH_SCORE
+            and bool(result.get("genres"))
+        )
+        igdb_genre = result["genres"][0] if is_igdb_match and result.get("genres") else None
         genre_override = lookup_genre_override(file_path, parsed_title, genre_overrides)
-        if genre_override:
-            genre = genre_override
-            status = "override"
+        genre, status = resolve_shelf_genre(
+            file_path,
+            parsed_title,
+            result.get("matched_name"),
+            igdb_genre,
+            curated_library,
+            genre_override=genre_override,
+            curated_entry=curated_entry,
+        )
+
+        if genre:
             matched_count += 1
         else:
-            is_match = (
-                bool(result.get("matched_name"))
-                and result.get("match_score", 0.0) >= args.min_match_score
-                and bool(result.get("genres"))
-            )
+            genre = UNKNOWN_GENRE
+            status = "unmatched"
+            unmatched_count += 1
 
-            if is_match:
-                genre = result["genres"][0] if result["genres"] else UNKNOWN_GENRE
-                status = "matched"
-                matched_count += 1
-            else:
-                genre = UNKNOWN_GENRE
-                status = "unmatched"
-                unmatched_count += 1
-
-        is_match = status in ("matched", "override")
+        is_match = status in ("matched", "override", "curated")
 
         genre_folder = sanitize_folder_name(genre)
         dest_folder = dest_dir / genre_folder
@@ -489,12 +402,12 @@ def main():
         log_rows = [row for row in rows if row["status"] == "unmatched"]
 
     if log_rows:
-        with open(args.log_file, "w", newline="", encoding="utf-8") as f:
+        with open(ORGANIZE_LOG_CSV, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(log_rows[0].keys()))
             writer.writeheader()
             writer.writerows(log_rows)
     elif args.unknowns_only:
-        with open(args.log_file, "w", newline="", encoding="utf-8") as f:
+        with open(ORGANIZE_LOG_CSV, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
                 fieldnames=[
@@ -523,9 +436,9 @@ def main():
         )
         for title in unique_titles:
             print(f"  {title}")
-        print(f"Log written to {args.log_file} (unmatched rows only).")
+        print(f"Log written to {ORGANIZE_LOG_CSV} (unmatched rows only).")
     else:
-        print(f"Log written to {args.log_file}")
+        print(f"Log written to {ORGANIZE_LOG_CSV}")
     if args.dry_run:
         print("Dry run: no files were copied.")
 

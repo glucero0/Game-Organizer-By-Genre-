@@ -20,6 +20,18 @@ class PickBestMatchTests(unittest.TestCase):
         self.assertEqual(best["name"], "Another World")
         self.assertGreater(score, 0.5)
 
+    def test_rejects_embedded_phrase_match(self):
+        results = [
+            {
+                "name": "Might and Magic II: Gates to Another World",
+                "genres": [{"name": "Role-playing (RPG)"}],
+            },
+            {"name": "Another World", "genres": [{"name": "Platform"}]},
+        ]
+        best, score = IGDBClient._pick_best_match("Another world", results)
+        self.assertEqual(best["name"], "Another World")
+        self.assertGreater(score, 0.5)
+
     def test_prefers_substring_match(self):
         results = [
             {"name": "A-10 Tank Killer", "genres": [{"name": "Simulator"}]},

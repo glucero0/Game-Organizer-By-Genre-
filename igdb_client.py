@@ -19,6 +19,9 @@ _API_BASE = "https://api.igdb.com/v4"
 # IGDB platform ID for Commodore Amiga.
 AMIGA_PLATFORM_ID = 16
 
+# Minimum fuzzy title similarity (0-1) required to accept an IGDB match in pass 1.
+MIN_MATCH_SCORE = 0.5
+
 
 class IGDBClient:
     def __init__(
@@ -159,7 +162,7 @@ class IGDBClient:
         """
         return self._lookup_single(title, cache_key=title.strip().lower())
 
-    def lookup_best_match(self, titles, min_score=0.5):
+    def lookup_best_match(self, titles, min_score=MIN_MATCH_SCORE):
         """
         Try several title variants (best-first) and return the strongest match.
         Cached under the first title in the list.
@@ -239,7 +242,7 @@ class IGDBClient:
 
         return best_result
 
-    def _lookup_single(self, title, cache_key=None, min_score=0.5, platform_ids=None):
+    def _lookup_single(self, title, cache_key=None, min_score=MIN_MATCH_SCORE, platform_ids=None):
         key = cache_key or title.strip().lower()
         if not key:
             return {
@@ -315,7 +318,16 @@ class IGDBClient:
             if query_norm == name_norm:
                 score = 1.0
             elif query_norm in name_norm:
-                score = max(difflib.SequenceMatcher(None, query_norm, name_norm).ratio(), 0.92)
+                length_ratio = len(query_norm) / max(len(name_norm), 1)
+                if length_ratio < 0.55 or (
+                    name_norm.endswith(query_norm) and length_ratio < 0.75
+                ):
+                    score = difflib.SequenceMatcher(None, query_norm, name_norm).ratio() * 0.4
+                else:
+                    score = max(
+                        difflib.SequenceMatcher(None, query_norm, name_norm).ratio(),
+                        0.92,
+                    )
             else:
                 score = difflib.SequenceMatcher(None, query_norm, name_norm).ratio()
                 if len(query_words) >= 2:
