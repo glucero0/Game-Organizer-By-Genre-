@@ -1,6 +1,6 @@
 import unittest
 
-from filename_parser import clean_title, reload_amiga_acronyms, search_title_variants
+from filename_parser import clean_title, reload_acronyms, search_title_variants
 
 
 def stem(filename):
@@ -78,7 +78,7 @@ class CleanTitleAmigaTests(unittest.TestCase):
 class SearchTitleVariantsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        reload_amiga_acronyms()
+        reload_acronyms()
 
     def test_altered_beast_variant(self):
         variants = search_title_variants("alteredbeast")

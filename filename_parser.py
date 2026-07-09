@@ -1,8 +1,8 @@
 """
 Heuristics for turning a messy game filename into clean, searchable game titles.
 
-Handles scene-release names, No-Intro/TOSEC ROM tags, and common Amiga ADF
-naming (disk suffixes, hardware tags, glued lowercase names).
+Handles scene-release names, No-Intro/TOSEC ROM tags, and common retro
+disk-image naming (disk suffixes, hardware tags, glued lowercase names).
 """
 
 import json
@@ -67,26 +67,41 @@ _DISK_SUFFIX_PATTERNS = (
 )
 
 # Scene acronyms: short filename -> full IGDB-searchable title.
-_AMIGA_ACRONYMS = {}
-_AMIGA_ACRONYMS_DEFAULTS = {
+_ACRONYMS = {}
+_ACRONYM_DEFAULTS = {
     "icftd": "It Came from the Desert",
     "synd": "Syndicate",
     "stooges": "The Three Stooges",
     "sinbad": "Sinbad and the Throne of the Falcon",
 }
+_ACRONYM_FILE_NAMES = ("acronyms.json", "amiga_acronyms.json")
 
 
-def _load_amiga_acronyms():
-    _AMIGA_ACRONYMS.clear()
-    _AMIGA_ACRONYMS.update(_AMIGA_ACRONYMS_DEFAULTS)
-    path = Path(__file__).with_name("amiga_acronyms.json")
-    if not path.exists():
+def _acronyms_path():
+    base = Path(__file__).resolve().parent
+    for name in _ACRONYM_FILE_NAMES:
+        path = base / name
+        if path.is_file():
+            return path
+    return base / _ACRONYM_FILE_NAMES[0]
+
+
+def _load_acronyms():
+    _ACRONYMS.clear()
+    _ACRONYMS.update(_ACRONYM_DEFAULTS)
+    path = _acronyms_path()
+    if not path.is_file():
         return
     try:
         with path.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
         for key, value in data.items():
-            _AMIGA_ACRONYMS[key.strip().lower()] = value.strip()
+            _ACRONYMS[key.strip().lower()] = value.strip()
+        if path.name == "amiga_acronyms.json":
+            print(
+                f"Note: loaded legacy {path.name}; rename to acronyms.json when convenient.",
+                file=sys.stderr,
+            )
     except json.JSONDecodeError as exc:
         print(
             f"Warning: could not load {path.name} ({exc}); using built-in acronyms only.",
@@ -96,12 +111,15 @@ def _load_amiga_acronyms():
         print(f"Warning: could not load {path.name} ({exc}).", file=sys.stderr)
 
 
-def reload_amiga_acronyms():
-    """Reload amiga_acronyms.json (call after editing the file)."""
-    _load_amiga_acronyms()
+def reload_acronyms():
+    """Reload acronyms.json (call after editing the file)."""
+    _load_acronyms()
 
 
-_load_amiga_acronyms()
+reload_amiga_acronyms = reload_acronyms
+
+
+_load_acronyms()
 
 # Filename-specific fixes (applied before glue-word expansion).
 _ABBREVIATION_FIXES = {
@@ -189,11 +207,11 @@ def _expand_scene_acronym(text):
     match = _SCENE_ACRONYM_PATTERN.match(compact)
     if match:
         acronym, _digits = match.groups()
-        expanded = _AMIGA_ACRONYMS.get(acronym.lower())
+        expanded = _ACRONYMS.get(acronym.lower())
         if expanded:
             return expanded
 
-    expanded = _AMIGA_ACRONYMS.get(compact.lower())
+    expanded = _ACRONYMS.get(compact.lower())
     if expanded:
         return expanded
     return text
@@ -257,8 +275,8 @@ def _lookup_abbreviation(text):
         if candidate in _ABBREVIATION_FIXES:
             fixed = _ABBREVIATION_FIXES[candidate]
             return _title_case_words(fixed) if " " in fixed else fixed.title()
-        if candidate in _AMIGA_ACRONYMS:
-            return _AMIGA_ACRONYMS[candidate]
+        if candidate in _ACRONYMS:
+            return _ACRONYMS[candidate]
 
     for stem in _abbreviation_stems(compact):
         if stem in _ABBREVIATION_FIXES:
@@ -268,8 +286,8 @@ def _lookup_abbreviation(text):
             if suffix.isdigit() and int(suffix) >= 2:
                 return f"{result} {int(suffix)}"
             return result
-        if stem in _AMIGA_ACRONYMS:
-            result = _AMIGA_ACRONYMS[stem]
+        if stem in _ACRONYMS:
+            result = _ACRONYMS[stem]
             suffix = compact[len(stem) :]
             if suffix.isdigit() and int(suffix) >= 2:
                 return f"{result} {int(suffix)}"

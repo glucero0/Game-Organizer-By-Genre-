@@ -12,14 +12,11 @@ from organize_games import (
     has_glob_pattern,
     load_genre_overrides,
     lookup_genre_override,
-    parse_args,
     parse_source_pattern,
-    platform_ids_for_glob,
     resolve_igdb_credentials,
-    resolve_platform_ids,
     _load_dotenv_file,
 )
-from igdb_client import AMIGA_PLATFORM_ID
+from platform_defaults import AMIGA_PLATFORM_ID, platform_ids_for_glob, resolve_platform_ids
 
 
 class SourceGlobTests(unittest.TestCase):
@@ -40,27 +37,9 @@ class SourceGlobTests(unittest.TestCase):
         self.assertIsNone(platform_ids_for_glob("*.zip"))
 
     def test_resolve_platform_override(self):
-        self.assertIsNone(resolve_platform_ids("*.adf", "none"))
-        self.assertEqual(resolve_platform_ids("*.zip", "amiga"), [AMIGA_PLATFORM_ID])
-
-
-class CliTests(unittest.TestCase):
-    def test_unknowns_only_flag(self):
-        with patch.object(
-            sys,
-            "argv",
-            [
-                "organize_games.py",
-                "--source",
-                "D:/Games/*.adf",
-                "--dest",
-                "D:/Organized",
-                "--unknowns-only",
-            ],
-        ):
-            args = parse_args()
-        self.assertTrue(args.unknowns_only)
-        self.assertFalse(args.dry_run)
+        defaults = {"aliases": {"amiga": AMIGA_PLATFORM_ID}, "extensions": {".adf": "amiga"}}
+        self.assertIsNone(resolve_platform_ids("*.adf", "none", defaults))
+        self.assertEqual(resolve_platform_ids("*.zip", "amiga", defaults), [AMIGA_PLATFORM_ID])
 
 
 class CredentialTests(unittest.TestCase):
@@ -91,34 +70,19 @@ class CredentialTests(unittest.TestCase):
         message = format_missing_credentials_error("", "secret")
         self.assertIn("IGDB_CLIENT_ID", message)
         self.assertNotIn("IGDB_CLIENT_SECRET", message.split("missing:")[1].split(".")[0])
+        self.assertIn(".env", message)
+        self.assertNotIn("igdb_credentials", message)
 
 
 class BuildSearchTitlesTests(unittest.TestCase):
-    def test_override_by_filename(self):
-        titles = build_search_titles(
-            _FakePath("weird.adf"),
-            "weird",
-            {"weird.adf": "Actual Game Name"},
-        )
-        self.assertEqual(titles, ["Actual Game Name"])
-
-    def test_override_by_parsed_title(self):
-        titles = build_search_titles(
-            _FakePath("file.adf"),
-            "afterthewar",
-            {"afterthewar": "After the War"},
-        )
-        self.assertEqual(titles, ["After the War"])
-
-    def test_without_override_returns_variants(self):
-        titles = build_search_titles(_FakePath("alteredbeast - d1.adf"), "alteredbeast", {})
+    def test_returns_variants(self):
+        titles = build_search_titles(_FakePath("alteredbeast - d1.adf"), "alteredbeast")
         self.assertIn("Altered Beast", titles)
 
     def test_igdb_alias_for_rebranded_title(self):
         titles = build_search_titles(
             _FakePath("4D Sports Driving (1990)(Mindscape)[cr CSL](Disk 1 of 2).adf"),
             "4D Sports Driving",
-            {},
         )
         self.assertEqual(titles[0], "Stunts")
 
@@ -126,9 +90,13 @@ class BuildSearchTitlesTests(unittest.TestCase):
         titles = build_search_titles(
             _FakePath("Dragon Force v1.02 (1989-12-08)(Interstel Corporation).adf"),
             "Dragon Force",
-            {},
         )
         self.assertEqual(titles[0], "D.R.A.G.O.N. Force")
+
+    def test_curated_search_titles_prepended(self):
+        entry = {"search_titles": ["The Great Giana Sisters"]}
+        titles = build_search_titles(_FakePath("gianasisters.adf"), "gianasisters", entry)
+        self.assertEqual(titles[0], "The Great Giana Sisters")
 
 
 class GenreOverrideTests(unittest.TestCase):
@@ -143,27 +111,30 @@ class GenreOverrideTests(unittest.TestCase):
         self.assertEqual(genre, "Adventure")
 
     def test_load_missing_file_returns_empty(self):
-        self.assertEqual(load_genre_overrides("/nonexistent/genre_overrides.json"), {})
+        with patch(
+            "organize_games.default_genre_overrides_path",
+            return_value=Path("/nonexistent/genre_overrides.json"),
+        ):
+            self.assertEqual(load_genre_overrides(), {})
 
     def test_load_genre_overrides(self):
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as handle:
-            json.dump({"Hack.adf": "Role-playing (RPG)"}, handle)
-            path = handle.name
-        try:
-            overrides = load_genre_overrides(path)
-        finally:
-            Path(path).unlink(missing_ok=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "genre_overrides.json"
+            path.write_text(
+                json.dumps({"Hack.adf": "Role-playing (RPG)"}),
+                encoding="utf-8",
+            )
+            with patch("organize_games.default_genre_overrides_path", return_value=path):
+                overrides = load_genre_overrides()
         self.assertEqual(overrides["hack.adf"], "Role-playing (RPG)")
 
     def test_invalid_genre_overrides_exits(self):
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as handle:
-            handle.write('{"broken": "Platform,}')
-            path = handle.name
-        try:
-            with self.assertRaises(SystemExit):
-                load_genre_overrides(path)
-        finally:
-            Path(path).unlink(missing_ok=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "genre_overrides.json"
+            path.write_text('{"broken": "Platform,}', encoding="utf-8")
+            with patch("organize_games.default_genre_overrides_path", return_value=path):
+                with self.assertRaises(SystemExit):
+                    load_genre_overrides()
 
 
 class _FakePath:
