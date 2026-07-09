@@ -1,0 +1,12 @@
+.env
+amiga_acronyms.json
+genre_overrides.json
+igdb_credentials.json
+.igdb_token_cache.json
+igdb_genre_cache.json
+igdb_genre_cache_test.json
+organize_log.csv
+probe*.json
+igdb_*probe*.json
+__pycache__/
+*.pyc
