@@ -73,6 +73,9 @@ _ACRONYM_DEFAULTS = {
     "synd": "Syndicate",
     "stooges": "The Three Stooges",
     "sinbad": "Sinbad and the Throne of the Falcon",
+    "eotb": "Eye of the Beholder",
+    "f1manag": "F1 Manager",
+    "chasehq": "Chase H.Q.",
 }
 _ACRONYM_FILE_NAMES = ("acronyms.json", "amiga_acronyms.json")
 

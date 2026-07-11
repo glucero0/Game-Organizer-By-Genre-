@@ -191,7 +191,7 @@ class SearchTitleVariantsTests(unittest.TestCase):
         self.assertIn("Test Drive II", variants)
 
     def test_kick_off_2(self):
-        variants = search_title_variants(clean_title(stem("KICKOFF2.ADF")))
+        variants = search_title_variants(clean_title(stem("KICKOFF2.adf")))
         self.assertIn("Kick Off 2", variants)
         self.assertTrue(any("II" in variant for variant in variants))
 
@@ -204,8 +204,8 @@ class SearchTitleVariantsTests(unittest.TestCase):
             "Silent Service - The Submarine Simulation v825.01 (1987)(MicroProse).adf": (
                 "Silent Service - The Submarine Simulation"
             ),
-            "EOTB2-d1.ADF": "Eye of the Beholder 2",
-            "F1manag1.adf": "F1 Manager",
+            "EOTB2-d1.adf": "Eye of the Beholder 2",
+            "f1manag1.adf": "F1 Manager",
             "chasehq.adf": "Chase H.Q.",
         }
         for filename, expected in cases.items():
