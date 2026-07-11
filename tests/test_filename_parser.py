@@ -205,7 +205,7 @@ class SearchTitleVariantsTests(unittest.TestCase):
                 "Silent Service - The Submarine Simulation"
             ),
             "EOTB2-d1.adf": "Eye of the Beholder 2",
-            "F1manag1.adf": "F1 Manager",
+            "f1manag1.adf": "F1 Manager",
             "chasehq.adf": "Chase H.Q.",
         }
         for filename, expected in cases.items():
